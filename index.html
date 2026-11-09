@@ -117,9 +117,7 @@
   }
   function hasInk() { return strokes.some(function (s) { return s.length > 1; }) || strokes.length > 2; }
   function update() {
-    var ok = hasInk();
-    if (tg && tg.MainButton) { ok ? tg.MainButton.enable().show() : tg.MainButton.disable(); }
-    document.getElementById("fallback").disabled = !ok;
+    document.getElementById("fallback").disabled = !hasInk();
   }
   function submit() {
     if (!hasInk()) { err.textContent = "Будь ласка, розпишіться в полі."; return; }
@@ -132,18 +130,17 @@
   });
   document.getElementById("fallback").addEventListener("click", submit);
 
-  // telegram-web-app.js defines Telegram.WebApp everywhere; initData is non-empty only inside Telegram.
-  if (tg && !tg.initData) tg = null;
+  // telegram-web-app.js defines Telegram.WebApp everywhere. Inside Telegram `platform` is set
+  // (ios/android/tdesktop/macos/web…); outside it is "unknown". Do NOT rely on initData: Mini Apps
+  // opened from a reply-keyboard button (needed for sendData) get an empty initData by design.
+  if (tg && (!tg.platform || tg.platform === "unknown")) tg = null;
   if (tg) {
     tg.ready(); tg.expand();
     if (tg.disableVerticalSwipes) tg.disableVerticalSwipes();   // drawing must not close the app
     if (tg.setHeaderColor) try { tg.setHeaderColor("#f3f5f8"); } catch (e) {}
-    tg.MainButton.setText("Готово — надіслати підпис");
-    tg.MainButton.onClick(submit);
-    tg.MainButton.show(); tg.MainButton.disable();
-  } else {
-    document.getElementById("fallback").style.display = "block";
   }
+  // One on-page «Готово» button everywhere (the native MainButton looks different in every client).
+  document.getElementById("fallback").style.display = "block";
   window.addEventListener("resize", resize);
   resize(); update();
 })();
