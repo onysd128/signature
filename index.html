@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Підпис</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root { --ink: #111; --line: #c9ced6; --muted: #5f6b7a; --accent: #2f6fdf; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #f3f5f8; color: var(--ink);
+    font: 16px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 640px; margin: 0 auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+  h1 { font-size: 18px; margin: 0; }
+  p { margin: 0; color: var(--muted); font-size: 14px; }
+  .pad { position: relative; background: #fff; border: 1.5px dashed var(--line); border-radius: 12px; }
+  canvas { display: block; width: 100%; height: 240px; touch-action: none; cursor: crosshair; border-radius: 12px; }
+  .baseline { position: absolute; left: 24px; right: 24px; bottom: 56px; border-bottom: 1px solid #e3e6ea; pointer-events: none; }
+  .hint { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: #aab2bd; pointer-events: none; font-size: 15px; }
+  .row { display: flex; gap: 8px; }
+  button { flex: 1; font: inherit; padding: 12px; border-radius: 10px; border: 1px solid var(--line);
+    background: #fff; color: var(--ink); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button:disabled { opacity: .45; }
+  #fallback { display: none; }
+  .err { color: #b42318; font-size: 14px; min-height: 1em; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Підпис учасника</h1>
+  <p>Розпишіться пальцем у білому полі — так само, як на папері. Підпис потрапить лише в бланк вашої інформованої згоди.</p>
+  <div class="pad">
+    <canvas id="c"></canvas>
+    <div class="baseline"></div>
+    <div class="hint" id="hint">Розпишіться тут</div>
+  </div>
+  <div class="row">
+    <button id="clear" type="button">Очистити</button>
+    <button id="fallback" class="primary" type="button">Готово</button>
+  </div>
+  <div class="err" id="err"></div>
+</main>
+<script>
+(function () {
+  "use strict";
+  var tg = window.Telegram && window.Telegram.WebApp;
+  var canvas = document.getElementById("c"), ctx = canvas.getContext("2d");
+  var hint = document.getElementById("hint"), err = document.getElementById("err");
+  var strokes = [], current = null, dpr = Math.max(1, window.devicePixelRatio || 1);
+  var A = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+  function resize() {
+    var r = canvas.getBoundingClientRect();
+    canvas.width = Math.round(r.width * dpr); canvas.height = Math.round(r.height * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); redraw();
+  }
+  function redraw() {
+    ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.strokeStyle = "#111"; ctx.lineWidth = 2.6; ctx.lineCap = "round"; ctx.lineJoin = "round";
+    strokes.forEach(function (s) {
+      ctx.beginPath(); ctx.moveTo(s[0][0], s[0][1]);
+      if (s.length === 1) { ctx.lineTo(s[0][0] + 0.1, s[0][1] + 0.1); }
+      for (var i = 1; i < s.length; i++) ctx.lineTo(s[i][0], s[i][1]);
+      ctx.stroke();
+    });
+  }
+  function pos(e) {
+    var r = canvas.getBoundingClientRect();
+    return [Math.max(0, Math.round(e.clientX - r.left)), Math.max(0, Math.round(e.clientY - r.top))];
+  }
+  canvas.addEventListener("pointerdown", function (e) {
+    e.preventDefault(); canvas.setPointerCapture(e.pointerId);
+    current = [pos(e)]; strokes.push(current); hint.style.display = "none"; err.textContent = ""; redraw(); update();
+  });
+  canvas.addEventListener("pointermove", function (e) {
+    if (!current) return; e.preventDefault();
+    var p = pos(e), last = current[current.length - 1];
+    if (Math.abs(p[0] - last[0]) + Math.abs(p[1] - last[1]) >= 2) { current.push(p); redraw(); }
+  });
+  function end() { current = null; }
+  canvas.addEventListener("pointerup", end); canvas.addEventListener("pointercancel", end);
+
+  // Drop points closer than `minDist` to the previous kept one (keeps first/last of each stroke).
+  function simplify(minDist) {
+    return strokes.map(function (s) {
+      var out = [s[0]];
+      for (var i = 1; i < s.length; i++) {
+        var l = out[out.length - 1];
+        if (i === s.length - 1 || Math.hypot(s[i][0] - l[0], s[i][1] - l[1]) >= minDist) out.push(s[i]);
+      }
+      return out;
+    });
+  }
+  // Same format as bot/logic/consult_docs.py: "S1:" + strokes joined by ".", 4-char start + 2 chars per delta.
+  function encode(ss) {
+    return "S1:" + ss.map(function (s) {
+      var x = Math.min(4095, s[0][0]), y = Math.min(4095, s[0][1]);
+      var out = A[x >> 6] + A[x & 63] + A[y >> 6] + A[y & 63];
+      for (var i = 1; i < s.length; i++) {
+        var tx = Math.min(4095, s[i][0]), ty = Math.min(4095, s[i][1]);
+        while (tx !== x || ty !== y) {
+          var dx = Math.max(-32, Math.min(31, tx - x)), dy = Math.max(-32, Math.min(31, ty - y));
+          out += A[dx + 32] + A[dy + 32]; x += dx; y += dy;
+        }
+      }
+      return out;
+    }).join(".");
+  }
+  function payload() {
+    for (var d = 0; d <= 12; d += 2) {
+      var data = encode(d ? simplify(d) : strokes);
+      if (data.length <= 4000) return data;
+    }
+    return null;
+  }
+  function hasInk() { return strokes.some(function (s) { return s.length > 1; }) || strokes.length > 2; }
+  function update() {
+    var ok = hasInk();
+    if (tg && tg.MainButton) { ok ? tg.MainButton.enable().show() : tg.MainButton.disable(); }
+    document.getElementById("fallback").disabled = !ok;
+  }
+  function submit() {
+    if (!hasInk()) { err.textContent = "Будь ласка, розпишіться в полі."; return; }
+    var data = payload();
+    if (!data) { err.textContent = "Підпис занадто складний — очистіть поле й розпишіться простіше."; return; }
+    if (tg && tg.sendData) { tg.sendData(data); } else { err.textContent = "Відкрийте цю сторінку з кнопки в Telegram-боті."; }
+  }
+  document.getElementById("clear").addEventListener("click", function () {
+    strokes = []; hint.style.display = ""; err.textContent = ""; redraw(); update();
+  });
+  document.getElementById("fallback").addEventListener("click", submit);
+
+  // telegram-web-app.js defines Telegram.WebApp everywhere; initData is non-empty only inside Telegram.
+  if (tg && !tg.initData) tg = null;
+  if (tg) {
+    tg.ready(); tg.expand();
+    if (tg.disableVerticalSwipes) tg.disableVerticalSwipes();   // drawing must not close the app
+    if (tg.setHeaderColor) try { tg.setHeaderColor("#f3f5f8"); } catch (e) {}
+    tg.MainButton.setText("Готово — надіслати підпис");
+    tg.MainButton.onClick(submit);
+    tg.MainButton.show(); tg.MainButton.disable();
+  } else {
+    document.getElementById("fallback").style.display = "block";
+  }
+  window.addEventListener("resize", resize);
+  resize(); update();
+})();
+</script>
+</body>
+</html>
